@@ -839,3 +839,45 @@ get_uk_balance_data <- function(db, tradetable = "trademonthly", tradeyear = 201
   }
   
   
+  ####
+  # Make all eu/non eu data
+  # 
+  # Returns: eunoneu, tottrade
+  #  
+  ####    
+  
+  get_all_eunoneu_data <- function(db, tradetable = "trademonthly", tradeyear = 2016, flowtype = "exports", commoditygroup = "ffd") {
+    
+    require(dplyr)
+    require(RPostgreSQL)
+    
+    ft <- switch(flowtype, "exports" = "in ('E', 'D')",
+                 "imports" = "in ('A', 'I')")
+    
+    cg <- switch(commoditygroup,
+                 "ffd" = " and cn.ffd_desc != 'Not entered'",
+                 "ffdplus" = "",
+                 "hs4" = "",
+                 "hs6" = "",
+                 "cn8" = "")
+    
+    
+
+    eu <- c("AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST", "FIN", "FRA", "DEU", "GRC", "HUN", "IRL", "ITA", "LVA", "LTU", "LUX", "MLT", "NLD", "POL", "PRT", "ROU", "SVK", "SVN", "ESP", "SWE", "GBR")
+    
+    sql <- paste("select g.eu_non_eu as eunoneu, sum(t.value) as tradevalue
+                 from ", tradetable, " as t
+                 join geo as g on t.codseq = g.country_id
+                 join cncodes as cn on t.comcode = cn.com_code",
+                 " where t.year = ", tradeyear, 
+                 " and t.type ", ft,
+                 cg, 
+                 "group by g.eu_non_eu", sep = "")
+    
+    returndata <- dbGetQuery(db, sql)
+    
+    
+    returndata
+  }
+  
+  

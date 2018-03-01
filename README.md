@@ -1,3 +1,3 @@
 ## FFD
 
-Flexdashboards for exploring trade data.
+Flexdashboards for exploring trade data. They need a database to connect to, currently an AWS one but could be anywhere, with a little code tweaking. Ideally (eventually) the tradetools package could be used to download and populate a database from the Defra bespoke download that HMRC publish. For now, I store the comcode and country reference data tables in the data folder, for future reference.

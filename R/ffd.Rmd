@@ -192,11 +192,44 @@ Showing:
       returndata
       
   })  
+  
+  eu_noneu_data <- reactive({
+    
+    returndata <- get_all_eunoneu_data(db = tradedata,
+                                       tradetable = ttable,
+                                       tradeyear = input$ukyear,
+                                       flowtype = input$ukflow,
+                                       commoditygroup =  ccode)
+    
+    returndata
+    
+  })
 
+  
+  # eutotal <- money(eu_noneu_data()[1,1])
+  # noneutotal <- money(eu_noneu_data()[2,1])
 
 ```
 
 ***
+
+*`r renderText({ paste("EU trade:", money(eu_noneu_data()[1,2])) })`*
+`r renderText({ paste("Non EU trade:", money(eu_noneu_data()[2,2])) })`
+
+```{r EU}
+
+renderTable({
+  
+  t <- eu_noneu_data() %>% 
+        mutate(value = money(tradevalue)) %>% 
+        select(eunoneu, value)
+  
+  t
+  
+})
+
+```
+
 
 Row
 -----------------------------------------------------------------------
