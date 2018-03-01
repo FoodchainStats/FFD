@@ -213,22 +213,10 @@ Showing:
 
 ***
 
-*`r renderText({ paste("EU trade:", money(eu_noneu_data()[1,2])) })`*
-`r renderText({ paste("Non EU trade:", money(eu_noneu_data()[2,2])) })`
+**`r renderText({ paste0("EU ", input$ukflow, ": ", money(eu_noneu_data()[1,2])) })`**
 
-```{r EU}
 
-renderTable({
-  
-  t <- eu_noneu_data() %>% 
-        mutate(value = money(tradevalue)) %>% 
-        select(eunoneu, value)
-  
-  t
-  
-})
-
-```
+**`r renderText({ paste0("Non EU ", input$ukflow, ": ", money(eu_noneu_data()[2,2])) })`**
 
 
 Row
