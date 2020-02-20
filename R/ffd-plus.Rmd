@@ -17,7 +17,7 @@ runtime: shiny
 # Load packages ----------------------------------------------------
 
 library(flexdashboard)
-library(RPostgreSQL)
+# library(RPostgreSQL)
 library(ggplot2)
 library(plotly)
 library(DT)
@@ -27,7 +27,7 @@ library(lubridate)
 library(xts)
 library(dygraphs)
 library(here)
-
+library(pool)
 
 # Load helper functions --------------------------------------------
 
@@ -38,16 +38,16 @@ source("queryfunctions.R")
 
 # Connect to database ----------------------------------------------
 
-  pg = dbDriver("PostgreSQL")
-  
-  dbconnect <- readRDS(here("dbconnect", "dbconnect.rds"))
-  
-  tradedata = dbConnect(pg,
-                        user = dbconnect$user,
-                        password = dbconnect$password,
-                        host = dbconnect$host,
-                        port = dbconnect$port,
-                        dbname = dbconnect$dbname)
+credentials <- readRDS("~/Documents/dbconnect.rds")
+
+
+tradedata <- dbPool(odbc::odbc(),
+                      driver = "PostgreSQL",
+                      database = "tradedata",
+                      UID    = credentials$UID[1],
+                      PWD    = credentials$PWD[1],
+                      host = "localhost",
+                      port = 5432)
     
 # Global variables and lists ----------------------------------------- 
 

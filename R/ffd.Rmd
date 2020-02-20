@@ -16,7 +16,7 @@ runtime: shiny
 # load packages
 #########################################
 library(flexdashboard)
-library(RPostgreSQL)
+# library(RPostgreSQL)
 library(ggplot2)
 library(plotly)
 library(DT)
@@ -26,6 +26,7 @@ library(lubridate)
 library(xts)
 library(dygraphs)
 library(here)
+library(pool)
 
 
 ###########################################
@@ -34,20 +35,24 @@ library(here)
 source("AWSfunctions.R")
 source("queryfunctions.R")
 
+# In case it helps...
+# https://shiny.rstudio.com/articles/reconnecting.html
+session$allowReconnect(TRUE)
+
 
 ###########################################
 # Connect to database
 ###########################################
-  pg = dbDriver("PostgreSQL")
+credentials <- readRDS("~/Documents/dbconnect.rds")
 
-  dbconnect <- readRDS(here("dbconnect", "dbconnect.rds"))
-  
-  tradedata = dbConnect(pg,
-                        user = dbconnect$user,
-                        password = dbconnect$password,
-                        host = dbconnect$host,
-                        port = dbconnect$port,
-                        dbname = dbconnect$dbname)
+
+tradedata <- dbPool(odbc::odbc(),
+                      driver = "PostgreSQL",
+                      database = "tradedata",
+                      UID    = credentials$UID[1],
+                      PWD    = credentials$PWD[1],
+                      host = "localhost",
+                      port = 5432)
 
 
   
