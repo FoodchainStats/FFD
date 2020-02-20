@@ -1,0 +1,1150 @@
+---
+title: "Trade Data Explorer"
+output: 
+  flexdashboard::flex_dashboard:
+    theme: yeti
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r globals, include=FALSE}
+# Global is treated differently
+# Load data in global if possible
+# http://rmarkdown.rstudio.com/flexdashboard/shiny.html
+
+#########################################
+# load packages
+#########################################
+library(flexdashboard)
+# library(RPostgreSQL)
+library(DBI)
+library(odbc)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(DT)
+library(treemap)
+library(scales)
+library(lubridate)
+library(xts)
+library(dygraphs)
+library(here)
+library(pool)
+
+
+###########################################
+# Load helper functions
+###########################################
+source(here::here("R", "AWSfunctions.R"))
+source(here::here("R", "queryfunctions.R"))
+
+# In case it helps...
+# https://shiny.rstudio.com/articles/reconnecting.html
+session$allowReconnect(TRUE)
+
+###########################################
+# Connect to database
+###########################################
+
+credentials <- readRDS("~/Documents/dbconnect.rds")
+
+
+tradedata <- dbPool(odbc::odbc(),
+                      driver = "PostgreSQL",
+                      database = "tradedata",
+                      UID    = credentials$UID[1],
+                      PWD    = credentials$PWD[1],
+                      host = "localhost",
+                      port = 5432)
+
+
+  
+########################################### 
+# global vars and lists 
+###########################################
+  
+  # global Countries
+  sqlcountrylist <- "select master_country_name 
+                     from geo 
+                     group by master_country_name
+                     order by master_country_name" 
+  clist <- dbGetQuery(tradedata, sqlcountrylist)
+
+  # global Comcodes
+  sqlffdlist <- "select ffd_desc from cncodes group by ffd_desc order by ffd_desc"
+  ffdlist <- dbGetQuery(tradedata, sqlffdlist)
+
+  # Trade flow SQL and text names
+  flow <- setNames(list("exports", "imports"), list("UK Exports", "UK Imports"))
+
+  
+  # Years, months and database rows
+  minmax <- dbGetQuery(tradedata, "select min(year), max(year) from (select year from trademonthly group by year order by year) as yrs")
+  minyr <- minmax[1,1]
+  maxyr <- minmax[1,2]  
+  maxmth <- dbGetQuery(tradedata, paste("select max(month) from trademonthly where year = ", maxyr))
+  yrs <- c(minyr:maxyr)
+  rows <- dbGetQuery(tradedata, "select count(*) from trademonthly")
+
+  # Comcode reference
+  sqlffdref <- "select ffd_desc, com_code, com_description from cncodes where ffd_desc!= 'Not entered' order by ffd_desc"
+  ffdref <- dbGetQuery(tradedata, sqlffdref)
+  
+  # Default trade table to use in queries
+  ttable <- "tradeannual"
+  
+  # Default comcode level
+  ccode <- "ffd"
+  
+  # Table layout options function
+  tbl_options <- function (coldefs) {
+  
+  outlist <- list(pageLength = 10,
+                           lengthMenu = list(c(5, 10, 25, -1), c("5", "10", "25", "All")),
+                           deferRender = FALSE,
+                           scrollY = "50vh",
+                           columnDefs = coldefs,
+                          dom = "lBfrtip",
+                          buttons = list(list(extend = "csv",
+                                              text = "Download",
+                                              exportOptions = list(modifier = list(page = "all"))))
+                           )
+  
+  return(outlist)
+  }
+  
+  
+########################################### 
+# Miscellaneous functions
+###########################################  
+  
+  # ellipsis format function for datatables
+  # from http://rstudio.github.io/DT/options.html
+    ell <- paste(
+      "function(data, type, row, meta) {",
+      "return type === 'display' && data.length > 25 ?",
+      "'<span title=\"' + data + '\">' + data.substr(0, 25) + '...</span>' : data;",
+      "}")
+
+  
+########################################### 
+# Colours and palettes
+###########################################   
+  
+  # old green colour: #15bc9c
+  
+  table_bar_colour <- "#67c6d3"
+  chart_bar_colour <- "#67c6d3"
+  map_colour_palette <- "YlOrRd"
+  treemap_palette <- "Pastel1" 
+  vbox_colour <- "skyblue"
+  
+
+```
+
+UK Overview {data-orientation=rows data-navmenu="Menu" data-icon="fa-bar-chart"}
+=======================================================================
+
+
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+
+**UK Overview**
+
+Showing:
+
+``` {r uk_overview_inputs}
+
+######################################
+# Sidebar inputs
+######################################
+  
+  selectInput('ukflow', label = NULL, choices = flow)
+  selectInput('ukyear', label = NULL, choices = yrs, selected = maxyr)
+
+
+######################################
+# Reactive datasets
+######################################
+
+  #Balance of trade data
+  uk_balance_data <- reactive({
+
+    returndata <- get_uk_balance_data(tradedata,
+                                      tradetable = ttable,
+                                      tradeyear = input$ukyear,
+                                      commoditygroup = ccode)
+    returndata
+    
+  })
+
+  # Countries data
+  uk_market_data <- reactive({
+        
+    returndata <- get_uk_market_data(tradedata,
+                                     tradetable = ttable,
+                                     tradeyear = input$ukyear,
+                                     flowtype = input$ukflow,
+                                     commoditygroup = ccode)
+    returndata
+    
+  })
+
+  
+  # Products data
+  uk_product_data <- reactive({
+    
+      returndata <- get_uk_product_data(tradedata,
+                                        tradetable = ttable,
+                                        tradeyear = input$ukyear,
+                                        flowtype = input$ukflow,
+                                        commoditygroup = ccode)
+      returndata
+      
+  })  
+  
+  eu_noneu_data <- reactive({
+    
+    returndata <- get_all_eunoneu_data(db = tradedata,
+                                       tradetable = ttable,
+                                       tradeyear = input$ukyear,
+                                       flowtype = input$ukflow,
+                                       commoditygroup =  ccode)
+    
+    returndata
+    
+  })
+
+  
+  # eutotal <- money(eu_noneu_data()[1,1])
+  # noneutotal <- money(eu_noneu_data()[2,1])
+
+```
+
+***
+
+**`r renderText({ paste0("EU ", input$ukflow, ": ", money(eu_noneu_data()[1,2])) })`**
+
+
+**`r renderText({ paste0("Non EU ", input$ukflow, ": ", money(eu_noneu_data()[2,2])) })`**
+
+
+Row
+-----------------------------------------------------------------------
+
+### Markets traded with
+``` {r uk_markets_vbox}
+
+  renderValueBox({
+    valueBox(value = nrow(uk_market_data()), icon = "fa-truck", color = vbox_colour)
+  })
+
+```
+
+### Total Exports
+``` {r uk_total_exports_vbox}
+
+  renderValueBox({
+    valueBox(value = money(uk_balance_data()[1,2]), icon = "fa-arrow-circle-right", color = vbox_colour)
+  })
+
+```
+
+### Balance of Trade
+``` {r uk_trade_balance_vbox}
+
+  renderValueBox({
+    bot <- uk_balance_data()[1,2] - uk_balance_data()[2,2]
+    valueBox(value = money(bot), icon = "fa-balance-scale", color = vbox_colour)
+  })
+
+```
+
+### Total Imports
+``` {r uk_total_imports_vbox}
+
+  renderValueBox({
+    valueBox(value = money(uk_balance_data()[2,2]), icon = "fa-arrow-circle-left", color = vbox_colour)
+  })
+
+```
+
+
+Row {.tabset}
+-----------------------------------------------------------------------
+### Top Countries
+```{r uk_top_countries}
+
+# Set up flow text for labels
+  ukflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$ukflow %in% x   )))
+  })
+
+# Need to use the DT version of renderDataTable to allow for server side processing
+# This allows the csv button to download the whole table
+# with the DT::renderDataTable server option (see the end of this function call)
+DT::renderDataTable({
+
+  datatable(uk_market_data(),
+            class = "compact row-border hover",
+            selection = "none",
+            filter = "none",
+            colnames = c("Country", "Continent", "Year", ukflowtext(), "% change", "Proportion", "Tonnes"),
+            extensions = c("Buttons"),
+            options = tbl_options(coldefs = list(list(visible = FALSE, targets = c(3))))
+  )  %>%
+    formatCurrency(columns = "tradevalue", currency = "£", digits = 0) %>%
+    formatCurrency(columns = "tradevolume", currency = "", digit = 0) %>%
+    formatPercentage(columns = "pctchg", digits = 1) %>%
+    formatPercentage(columns = "propn", digits =1) %>%
+    formatStyle(
+      "tradevalue",
+      background = styleColorBar(uk_market_data()$tradevalue, table_bar_colour),
+      backgroundSize = '100% 90%',
+      backgroundRepeat = 'no-repeat',
+      backgroundPosition = 'center') %>%
+    formatStyle(
+      "tradevolume",
+      background = styleColorBar(uk_market_data()$tradevolume, table_bar_colour),
+      backgroundSize = '100% 90%',
+      backgroundRepeat = 'no-repeat',
+      backgroundPosition = 'center')
+  
+# server option in DT::datatable
+# see http://rstudio.github.io/DT/shiny.html
+}, server = FALSE)
+
+
+```
+
+### Top Products
+``` {r uk_top_products}
+
+# Set up flow text for labels
+  ukflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$ukflow %in% x   )))
+  })
+
+DT::renderDataTable({
+
+  datatable(uk_product_data(),
+            class = "compact row-border hover",
+            selection = "none",
+            filter = "none",
+            extensions = c("Buttons"),
+            colnames = c("Commodity", "Year", ukflowtext(), "% change", "Proportion", "Tonnes"),
+            options = tbl_options(coldefs = list(list(targets = c(1), render = JS(ell)),
+                                                 list(visible = FALSE, targets = c(2))))
+            
+  )  %>%
+    formatCurrency(columns = "tradevalue", currency = "£", digits = 0) %>%
+    formatCurrency(columns = "tradevolume", currency = "", digit = 0) %>% 
+    formatPercentage(columns = "pctchg", digits = 1) %>%
+    formatPercentage(columns = "propn", digits = 1) %>% 
+    formatStyle(
+      'tradevalue',
+      background = styleColorBar(uk_market_data()$tradevalue, color = table_bar_colour),
+      backgroundSize = '100% 90%',
+      backgroundRepeat = 'no-repeat',
+      backgroundPosition = 'center') %>% 
+    formatStyle(
+      'tradevolume',
+      background = styleColorBar(uk_market_data()$tradevolume, color = table_bar_colour),
+      backgroundSize = '100% 90%',
+      backgroundRepeat = 'no-repeat',
+      backgroundPosition = 'center')    
+  
+}, server = FALSE)
+  
+```
+
+
+
+Country View {data-orientation=rows data-navmenu="Menu" data-icon="fa-globe"}
+=======================================================================
+
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+**Country View**
+
+Showing:
+
+```{r country_view_inputs}
+
+######################################
+# Sidebar inputs
+######################################
+  selectInput('cflow', label = NULL, choices = flow)
+  selectInput('cyear', label = NULL, choices = yrs, selected = maxyr)
+  selectInput('country', label = NULL, choices = clist)
+  hr()
+
+
+######################################
+# Reactive datasets
+######################################
+  country_balance_data <- reactive({
+    
+    returndata <- get_country_balance_data(tradedata,
+                                           tradetable = ttable,
+                                           tradeyear = input$cyear,
+                                           commoditygroup = ccode,
+                                           country = input$country)
+    
+    returndata 
+  
+  })
+
+
+  country_top_trade <- reactive({
+  
+    returndata <- get_country_top_trade(tradedata,
+                                        tradetable = ttable,
+                                        tradeyear = input$cyear,
+                                        flowtype = input$cflow,
+                                        country = input$country)
+    returndata
+    
+    })
+  
+  country_tot_trade <- reactive({
+    
+      returndata <- get_country_tot_trade(tradedata,
+                                          tradetable = ttable,
+                                          tradeyear = input$cyear,
+                                          flowtype = input$cflow,
+                                          commoditygroup = ccode,
+                                          country = input$country)
+      returndata
+    
+    
+  })  
+
+
+```
+
+Row
+------------------------------------------------------------------------
+### Total trade
+
+``` {r country_exports_valuebox}
+
+  cflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$cflow %in% x   )))
+  })
+
+  renderValueBox({
+      # totexp <- as.numeric(balance_data()[1,2])
+      valueBox(value = paste(cflowtext(), ": ", money(country_tot_trade()$tradevalue), sep = ""), icon = "fa-globe", color = vbox_colour)
+  })
+
+```
+
+### Balance of Trade
+
+``` {r balanceoftrade_valuebox}
+
+renderValueBox({
+  botdata <- country_balance_data()
+  bot <- as.numeric(botdata[1,2] - botdata[2,2])
+  valueBox(value = money(bot), icon = "fa-balance-scale", color = vbox_colour)
+  })
+
+```
+
+
+Row {.tabset}
+------------------------------------------------------------------------
+
+
+### Top 10 chart
+
+```{r country_top_products_chart}
+
+  renderPlot({
+    
+    if(nrow(country_top_trade()) <10) {
+      chtdata <- as.data.frame(country_top_trade())
+    } else {
+      chtdata <- as.data.frame(country_top_trade()[1:10, ])
+    }
+      
+      labs <- lapply(chtdata[order(chtdata$tradevalue), "commodity"], FUN = wraptext, wrapat = 20)
+  
+      chtdata$commodity <- factor(chtdata$commodity,
+                                  levels = chtdata[order(chtdata$tradevalue), "commodity"], labels = labs)
+      
+  
+      cht <- ggplot(data = chtdata, aes(x = commodity, y = tradevalue)) +
+        geom_bar(stat="identity", fill = chart_bar_colour) +
+        geom_text(aes(label = money(tradevalue)),
+                  position = position_dodge(0.9),
+                  angle = 0,
+                  hjust = -0.2,
+                  size = 6) +
+        #  scale_y_continuous(label = money) +
+        theme_minimal() +
+        theme(panel.grid.major.x = element_blank(),
+              panel.grid.minor.x = element_blank(),
+              panel.grid.major.y = element_blank(),
+              panel.grid.minor.y = element_blank(),
+              axis.title.x = element_blank(),
+              axis.title.y = element_blank(),
+              axis.text.y = element_text(face = "bold", size = 12),
+              axis.text.x = element_blank()
+        ) +
+        coord_flip()
+      
+  
+  cht
+    
+  })
+
+```
+
+### Balance of trade
+
+``` {r country_trade_balance}
+
+  renderPlot({
+  
+  
+    cht <- ggplot(data = country_balance_data(), aes(x = tradeflow, y = tradevalue, fill = tradevalue)) +
+            geom_bar(stat="identity") +
+            geom_text(aes(label = money(tradevalue)),
+                      position = position_dodge(0.9),
+                      angle = 0,
+                      vjust = -0.2,
+                      size = 4) +
+    #        scale_y_continuous(label = money) +
+            theme_minimal() +
+            theme(panel.grid.major.x = element_blank(),
+                  panel.grid.minor.x = element_blank(),
+                  panel.grid.major.y = element_blank(),
+                  panel.grid.minor.y = element_blank(),
+                  axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+          #        axis.text.x = element_text(face = "bold", angle = 90),
+                  axis.text.y = element_blank(),
+                  legend.position = "none"
+                  )
+    
+    
+    cht
+  
+  
+  })
+
+
+```
+
+### Food, feed and drink
+
+```{r country_top_trade_table}
+
+
+# Set up flow text for labels
+  cflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$cflow %in% x   )))
+  })
+
+    
+  DT::renderDataTable({
+
+    datatable(country_top_trade(),
+              class = "compact row-border hover",
+              selection = "none",
+              filter = "none",
+              extensions = c("Buttons"),
+              colnames = c("Country", "Commodity", "Year", cflowtext(), "% change", "Proportion", "Tonnes"),
+              options = tbl_options(coldefs = list(list(targets = c(2), render = JS(ell)),
+                                                   list(targets = c(1,3), visible = FALSE)))
+    )  %>% 
+      formatCurrency(columns = "tradevalue", currency = "£", digits = 0) %>% 
+      formatCurrency(columns = "tradevolume", currency = "", digit = 0) %>% 
+      formatPercentage(columns = "pctchg", digits = 1) %>% 
+      formatPercentage(columns = "propn", digits = 1) %>% 
+      formatStyle(
+        'tradevalue',
+        background = styleColorBar(country_top_trade()$tradevalue, table_bar_colour),
+        backgroundSize = '100% 90%',
+        backgroundRepeat = 'no-repeat',
+        backgroundPosition = 'center') %>% 
+      formatStyle(
+        'tradevolume',
+        background = styleColorBar(country_top_trade()$tradevolume, table_bar_colour),
+        backgroundSize = '100% 90%',
+        backgroundRepeat = 'no-repeat',
+        backgroundPosition = 'center')
+    
+    }, server = FALSE)
+
+
+```
+
+
+### By product
+
+``` {r drilldown_picker}
+
+  #uiOutput("ddbox", inline = TRUE)
+  
+  output$ddbox <- renderUI({
+  
+
+  clist <- get_commodity_list(tradedata,
+                              tradetable = ttable,
+                              flowtype = input$cflow,
+                              commoditygroup = ccode,
+                              country = input$country)
+  
+  ctext <- as.character(clist$code)
+  names(ctext) <- clist$commodity
+  commoditylist <- as.list(ctext)
+  
+  selectInput("drilldownffd", label = NULL, choices = commoditylist, width = "35%")
+  
+  })
+  
+  
+  drilldown_data <- reactive({
+  
+  chtdata <- get_country_commodity_data(tradedata,
+                                        tradetable = "trademonthly",
+                                        flowtype = input$cflow,
+                                        commoditygroup = ccode,
+                                        commodity = input$drilldownffd,
+                                        country = input$country) 
+  
+  chtdata$date <- parse_date_time(paste(chtdata$year,chtdata$month, sep = ""), "ym")
+  
+  # chtdata$date <- as.Date(chtdata$date)
+  chtdata <- xts(chtdata, order.by = chtdata$date)
+  
+  chtdata
+  
+  })
+  
+  
+  
+  
+  output$dg <- renderDygraph({
+    chtdata <- drilldown_data()
+    chtdata$year <- NULL
+    chtdata$month <- NULL
+    chtdata$ffd_desc <- NULL
+    dygraph(chtdata) %>%
+      dyOptions(drawPoints = TRUE, pointSize = 2)
+    
+  })
+  
+  fillCol(height = 450, flex = c(NA,1), 
+          uiOutput("ddbox"),
+          dygraphOutput("dg")
+  )
+  
+  # renderPlot({
+  # 
+  # ggplot(data = drilldown_data(), aes(x = date, y = tradevalue)) +
+  #   geom_line() +
+  #   geom_point() +
+  #   geom_smooth(method = "auto") +
+  #   scale_y_continuous(limit = c(0, NA)) + 
+  #   scale_x_datetime() +
+  #   theme_minimal()
+  # 
+  # }, height = 450)
+
+```
+
+### Product Data
+
+``` {r dd_datatable}
+
+DT::renderDataTable({
+  
+  datatable(drilldown_data(),
+            class = "compact row-border hover",
+            selection = "none",
+            filter = "none",
+            extensions = c("Buttons"),
+            colnames = c("Year", "Month", "Commodity", cflowtext(), "Tonnes", "date"),
+            options = tbl_options(coldefs = list(list(targets = c(3), render = JS(ell))))
+            ) %>% 
+            formatCurrency(columns = "tradevalue", currency = "£", digits = 0) %>% 
+            formatCurrency(columns = "tradevolume", currency = "", digit = 0) %>% 
+            formatDate(columns = "date", method = "toLocaleDateString")
+  
+}, server = FALSE)
+
+```
+
+
+
+Product View {data-orientation=rows data-navmenu="Menu" data-icon="fa-cutlery"}
+=======================================================================
+
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+
+**Product View**
+
+Showing:
+
+``` {r product_view_inputs}
+######################################
+# Sidebar inputs
+######################################
+  selectInput('pflow', label = NULL, choices = flow)
+  selectInput('pyear', label = NULL, choices = yrs, selected = maxyr)
+  selectInput('ffd', label = NULL, choices = ffdlist)
+  
+######################################
+# Reactive datasets
+######################################
+  country_markets_data <- reactive({
+
+    
+      returndata <- get_country_markets_data(tradedata, tradetable = ttable, tradeyear = input$pyear, flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+      returndata
+  })
+
+    country_totexports_data <- reactive({
+
+        returndata <- get_country_totexports_data(tradedata, tradetable = ttable, tradeyear = input$pyear, flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+        returndata
+      
+    })  
+
+   product_map_data <- reactive({
+
+      returndata <- get_product_map_data(tradedata, tradetable = ttable, tradeyear = input$pyear,flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+      returndata
+    
+  })
+   
+  product_map_table <- reactive({
+    
+
+    returndata <- get_product_map_table(tradedata, tradetable = ttable, tradeyear = input$pyear,flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+    returndata
+    
+  })
+
+   product_top_trade <- reactive({
+             
+    returndata <- get_product_top_trade(tradedata, tradetable = ttable, tradeyear = input$pyear, flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+    returndata
+  
+   })
+   
+  product_treemap_data <- reactive({
+  
+    returndata <- get_product_treemap_data(tradedata, tradetable = ttable, tradeyear = input$pyear, flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+    
+    returndata
+    
+  })
+
+  product_eunoneu_data <- reactive({
+      
+    returndata <- get_product_eunoneu_data(tradedata, tradetable = ttable, tradeyear = input$pyear, flowtype = input$pflow, commoditygroup = ccode, commodity = input$ffd)
+    returndata
+    
+  })  
+        
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Markets traded with
+``` {r product_markets_vbox}
+renderValueBox({
+      valueBox(value = nrow(country_markets_data()),  icon = "fa-globe", color = vbox_colour)
+  })
+
+```
+
+### Total UK trade
+
+```{r product_totexports_valuebox}
+  
+# Set up flow text for labels
+  pflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$pflow %in% x   )))
+  })
+
+  renderValueBox({
+        valueBox(value = paste(pflowtext(), ": ", money(sum(country_totexports_data()$tradevalue))),  icon = "fa-gbp", color = vbox_colour)
+    
+  })
+
+```
+
+
+Row {.tabset}
+-----------------------------------------------------------------------
+### Map
+
+```{r product_map}
+
+# Set up flow text for labels
+  pflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$pflow %in% x   )))
+  })
+
+renderPlotly({
+
+      # light grey boundaries
+    l <- list(color = toRGB("grey"), width = 0.5)
+    
+    # specify map projection/options
+    g <- list(
+      showframe = FALSE,
+      showcoastlines = TRUE,
+      showcountries = TRUE,
+      coastlinecolor = toRGB("grey"),
+      countrycolor = toRGB("grey"),
+      showocean = TRUE,
+      oceancolor = toRGB("aliceblue"),
+      projection = list(type = 'Mercator'),
+      scope = "world"
+    )
+    
+    vals <- unique(rescale(product_map_data()$tradevalue))
+    o <- order(vals, decreasing = FALSE)
+    cols <- col_bin(map_colour_palette, domain = NULL)(vals)
+    colz <- setNames(data.frame(vals[o], cols[o]), NULL)
+  
+    #colors = map_colour_palette
+    
+     plot_geo(product_map_data()) %>%
+      add_trace(
+        z = ~tradevalue, color = ~tradevalue, colorscale = colz,
+        text = ~hover, locations = ~code, marker = list(line = l), showscale = TRUE, hoverinfo = "text") %>%
+       layout(geo = g, title = paste(input$ffd, pflowtext(), input$pyear)) %>% 
+      colorbar(yanchor = "middle", title = pflowtext())
+  
+  
+})
+
+```
+
+### Map data
+
+``` {r product_map_table}
+
+# Set up flow text for labels
+  pflowtext <- reactive({
+    names(which(sapply(flow, FUN = function(x) input$pflow %in% x   )))
+  })
+
+
+DT::renderDataTable({
+
+
+  datatable(product_map_table(),
+            class = "compact row-border hover",
+            selection = "none",
+            filter = "none",
+            extensions = c("Buttons"),
+            colnames = c("Country code", "Country", "Continent", "Commodity", "Year", pflowtext(), "% change", "Proportion", "Tonnes"),
+            options = tbl_options(coldefs = list(list(visible = FALSE, targets = c(1,5))))
+            )  %>%
+            formatCurrency(columns = "tradevalue", currency = "£", digits = 0) %>%
+            formatCurrency(columns = "tradevolume", currency = "", digit = 0) %>% 
+            formatPercentage(columns = "pctchg", digits = 1) %>%
+            formatPercentage(columns = "propn", digits = 1) %>% 
+            formatStyle(
+            'tradevalue',
+            background = styleColorBar(product_map_table()$tradevalue, table_bar_colour),
+            backgroundSize = '100% 90%',
+            backgroundRepeat = 'no-repeat',
+            backgroundPosition = 'center',) %>% 
+            formatStyle(
+            'tradevolume',
+            background = styleColorBar(product_map_table()$tradevolume, table_bar_colour),
+            backgroundSize = '100% 90%',
+            backgroundRepeat = 'no-repeat',
+            backgroundPosition = 'center',)
+    
+    
+}, server = FALSE)
+
+```
+
+
+### Top 10 Countries
+
+``` {r product_top10_countries_chart}
+
+renderPlotly({
+  
+  #Might fix the Rplots.pdf plotly problem??
+  pdf(NULL)
+  
+  if(nrow(product_map_table()) <10) {
+      chtdata <- as.data.frame(product_map_table())
+    } else {
+      chtdata <- as.data.frame(product_map_table()[1:10, ])
+    }
+
+  
+   chtdata$country <- factor(chtdata$country, levels = chtdata[order(chtdata$tradevalue), "country"] )
+  
+    cht <- ggplot(data = chtdata, aes(x = country, y = tradevalue)) +
+            geom_bar(stat="identity", fill = chart_bar_colour) +
+            geom_text(aes(label = money(tradevalue)),
+                  position = position_dodge(0.9),
+                  angle = 0,
+                  hjust = -0.2,
+                  size = 4) +
+  #          scale_y_continuous(label = money) +
+            theme_minimal() +
+             theme(panel.grid.major.x = element_blank(),
+              panel.grid.minor.x = element_blank(),
+              panel.grid.major.y = element_blank(),
+              panel.grid.minor.y = element_blank(),
+              axis.title.x = element_blank(),
+              axis.title.y = element_blank(),
+      #        axis.text.x = element_text(face = "bold", angle = 90),
+              axis.text.x = element_blank()
+              ) +
+            coord_flip()
+    
+    cht
+    
+
+  
+})
+
+```
+
+
+### Treemap
+
+``` {r product_treemap}
+
+renderPlot({
+  
+  cht <- treemap(dtf = as.data.frame(product_treemap_data()),
+                 index = c("continent", "country"),
+                 vSize = "tradevalue",
+                 vColor = "continent",
+                 palette = treemap_palette,
+                 title = paste(input$ffd, pflowtext(), input$pyear),
+                 align.labels = list(c("center", "center"), c("left", "top")),
+                 fontsize.labels = 14
+                 )
+  
+  cht
+  
+})
+
+
+
+```
+
+
+### EU/Non EU
+
+``` {r product_eu_chart}
+renderPlot({
+  
+    cht <- ggplot(data = product_eunoneu_data(), aes(x = eunoneu, y = tottrade, fill = eunoneu)) +
+            geom_bar(stat="identity") +
+            geom_text(aes(label = money(tottrade)),
+                      position = position_dodge(0.9),
+                      angle = 0,
+                      vjust = -0.2,
+                      size = 4) +
+#            scale_y_continuous(label = money) +
+            theme_minimal() +
+            theme(panel.grid.major.x = element_blank(),
+                  panel.grid.minor.x = element_blank(),
+                  panel.grid.major.y = element_blank(),
+                  panel.grid.minor.y = element_blank(),
+                  axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+          #        axis.text.x = element_text(face = "bold", angle = 90),
+                  axis.text.y = element_blank(),
+                  legend.position = "none"
+                  )
+    
+    cht
+    
+})
+
+
+```
+
+
+About this tool {data-navmenu="Help" data-icon="fa-info-circle"}
+========================================================================
+``` {r metrics}
+
+rows <- dbGetQuery(tradedata, "select count(*) from trademonthly")
+  
+  txt <- paste("Built from ", format(rows, big.mark = ","), "rows of exciting trade data for you to explore.")
+  txt1 <- paste("Database contains data from ", minyr, "to ", maxyr)
+  txt2 <- paste("Latest month available for", maxyr, "is ", maxmth)
+  
+
+```
+
+#### About this tool
+
+![Trade Data Explorer](`r here("www", "TDE.png")`)
+
+What you see here is **food, feed and drink** statistics. Other agri-food commodities are not shown: such as trade in hides, skins, agricultural machinery etc. Defra talks about 'food and drink' in its comms generally, and headline figures here will align with that.  
+
+If you need more detail or specific codes, please contact the team as below.
+
+
+***
+
+#### Database details
+  
+`r txt`  
+`r txt1`  
+`r txt2`  
+
+*App version 1.0*
+
+***
+
+#### Contact
+  
+Brought to you by the Dream Team.
+    
+**Questions? Problems? Feedback?**  
+
+This is your tool. Speak to us!  
+
+Contact: David Lee  
+david.lee@defra.gsi.gov.uk  
++44 (0) 208 026 3006  
+
+***
+
+#### Version history
+
+TBA
+
+About the data {data-navmenu="Help" data-icon="fa-question-circle"}
+========================================================================
+
+Row {.tabset}
+------------------------------------------------------------------------
+
+### The Data
+
+
+#### What the data covers
+
+The data explorer shows **food, feed and drink** statistics. Other agri-food commodities are not shown: such as trade in hides, skins, agricultural machinery etc. Defra talks about 'food and drink' in its comms generally, and headline figures here will align with that.  
+
+#### Data quality and limitations
+
+
+#### Where it comes from
+
+
+***
+
+#### FAQs
+
+* TBA
+
+### Commodity Codes
+
+Below are the food and drink types and the commodity codes they are made up of.
+
+``` {r code_reference}
+
+renderDataTable({
+  
+  datatable(ffdref, 
+            filter = "top",
+            class = "compact row-border stripe hover",
+            extensions = c("Scroller"),
+            options = list(pageLength = 5,
+                           lengthMenu = c(5, 10, 25),
+                           deferRender = TRUE,
+                           scrollY = 400,
+                           scroller = TRUE,
+                           dom = "Bfti",
+                           buttons = c("copy", "csv")
+                           )
+            )
+  
+})
+
+```
+
+To do List {data-navmenu="Help" data-icon="fa-list"}
+========================================================================
+
+#### The pipeline of possibilities
+
+*General*
+
+* Report print output?? Or plain Rmd version...
+* switch to dplyr and pool? http://shiny.rstudio.com/articles/pool-dplyr.html
+* sqlInterpolate integration
+* Sparklines
+* Custom chart theme to streamline chart code?
+* deal gracefully with queries that return no data
+* Interactive comments??
+* mobile friendly version
+* How to deal with part years?
+
+*Country page*
+
+
+*Product page*
+
+* Comcode level food picker
+
+
+*UK overview page*
+
+
+***
+
+#### Completed changes
+
+*General*
+
+* Year picker
+* Food picker page
+* Valueboxes with headlines
+* Export/import input
+* Format values in 000s
+* Volumes
+* Streamline queries with reactives
+* Time series
+* 'Proportion of total' in tables?
+* add help/database metrics page
+* populate minmax years in inputboxes
+* reorder inputboxes to make more sense
+
+*Country page*
+
+* year on year comparison
+
+*Product page*
+
+* EU/Non EU
+* year on year to map table
+* Balance of trade
+* treemap
+* rationalise queries - Beef and veal Australia imports not right
+* Sort out country coding - we need ISO 3-alpha at least in the geo master table (maybe a left join on the complete isocountries dataset - I just deleted row 201 and 2014 to make it work)
+* and delete zero values in all datasets!
+* Why is my map not changing colour?
+
+*UK overview page*
+
+* Stuff
